@@ -7,45 +7,33 @@ def lambda_handler(event, context):
             action = event.get('detail', {}).get('action')
         else:
             action = event.get('action')
-        
+
         # Validate and process the action
         if action == 'start':
-            cluster_name = 'sag-ECS-cluster'
-            service_name = 'service_for_ecs'
-            task_definition_arn = 'arn:aws:ecs:ap-south-1:927689643452:task-definition/mynodeapp-new:60'
-            ecs_client = boto3.client('ecs')
-
-            response = ecs_client.update_service(
-                cluster=cluster_name,
-                service=service_name,
-                taskDefinition=task_definition_arn,
-                desiredCount=1
-            )
+            cluster_name = 'db-cluster-aurora'  # Replace with your Aurora Serverless cluster identifier
             
+            # Start the Aurora Serverless cluster
+            rds_client = boto3.client('rds')
+            response = rds_client.start_db_cluster(DBClusterIdentifier=cluster_name)
+
             custom_input = event.get('customInput', {})
             return {
                 'statusCode': 200,
-                'body': 'ECS service started with a new task definition!',
+                'body': f'Aurora Serverless cluster {cluster_name} started!',
                 'customInputReceived': custom_input
             }
 
         elif action == 'stop':
-            cluster_name = 'sag-ECS-cluster'
-            service_name = 'service_for_ecs'
-            task_definition_arn = 'arn:aws:ecs:ap-south-1:927689643452:task-definition/mynodeapp-new:60'
-            ecs_client = boto3.client('ecs')
-
-            response = ecs_client.update_service(
-                cluster=cluster_name,
-                service=service_name,
-                taskDefinition=task_definition_arn,
-                desiredCount=0
-            )
+            cluster_name = 'db-cluster-aurora'  # Replace with your Aurora Serverless cluster identifier
             
+            # Stop the Aurora Serverless cluster
+            rds_client = boto3.client('rds')
+            response = rds_client.stop_db_cluster(DBClusterIdentifier=cluster_name)
+
             custom_input = event.get('customInput', {})
             return {
                 'statusCode': 200,
-                'body': 'ECS service stopped!',
+                'body': f'Aurora Serverless cluster {cluster_name} stopped!',
                 'customInputReceived': custom_input
             }
 
