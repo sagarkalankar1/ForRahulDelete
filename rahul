@@ -1,21 +1,77 @@
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "ecs:UpdateService"
-            ],
-            "Resource": "*"
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "logs:CreateLogGroup",
-                "logs:CreateLogStream",
-                "logs:PutLogEvents"
-            ],
-            "Resource": "arn:aws:logs:ap-south-1:927689643452:log-group:/aws/lambda/StartECSsag:*"
-        }
-    ]
-}
+import boto3
+
+def lambda_handler(event, context):
+    try:
+        # Extract the action from the event
+        if 'source' in event and event['source'] == 'aws.events':
+            action = event.get('detail', {}).get('action')
+        else:
+            action = event.get('action')
+
+        # Validate and process the action
+        if action == 'start':
+            cluster_name = 'db-cluster-aurora'  # Replace with your Aurora Serverless cluster identifier
+            
+            # Start the Aurora Serverless cluster
+            rds_client = boto3.client('rds')
+            response = rds_client.start_db_cluster(DBClusterIdentifier=cluster_name)
+            
+            # ECS-related code (start the service using ecs_client.update_service)
+            ecs_cluster_name = 'ecs-cluster1'
+            ecs_service_name = 'Service'
+            task_definition_arn = 'arn:aws:ecs:ap-south-1:528267078178:task-definition/td:2'
+            ecs_client = boto3.client('ecs')
+            response = ecs_client.update_service(
+                cluster=ecs_cluster_name,
+                service=ecs_service_name,
+                taskDefinition=task_definition_arn,
+                desiredCount=1
+            )
+
+            custom_input = event.get('customInput', {})
+            return {
+                'statusCode': 200,
+                'body': f'Aurora Serverless cluster {cluster_name} started and ECS service started!',
+                'customInputReceived': custom_input
+            }
+
+        elif action == 'stop':
+            # ECS-related code (stop the service using ecs_client.update_service)
+            ecs_cluster_name = 'ecs-cluster1'
+            ecs_service_name = 'Service'
+            task_definition_arn = 'arn:aws:ecs:ap-south-1:528267078178:task-definition/td:2'
+            ecs_client = boto3.client('ecs')
+            response = ecs_client.update_service(
+                cluster=ecs_cluster_name,
+                service=ecs_service_name,
+                taskDefinition=task_definition_arn,
+                desiredCount=0
+            )
+
+            # Stop the Aurora Serverless cluster
+            aurora_cluster_name = 'db-cluster-aurora'  # Replace with your Aurora Serverless cluster identifier
+            rds_client = boto3.client('rds')
+            response = rds_client.stop_db_cluster(DBClusterIdentifier=aurora_cluster_name)
+
+            custom_input = event.get('customInput', {})
+            return {
+                'statusCode': 200,
+                'body': f'ECS service stopped and Aurora Serverless cluster {aurora_cluster_name} stopped!',
+                'customInputReceived': custom_input
+            }
+
+        else:
+            return {
+                'statusCode': 400,
+                'body': 'Invalid action. Use "start" or "stop".'
+            }
+
+    except Exception as e:
+        return {
+            'statusCode': 500,
+            'body': str(e)
+        }
+
+#above is code for single lambda function to start and stop aurora db and ecs service
+#We will invoke this lambda function by using 2 event bridges, first one to start services at
+# 10:00AM and second one to stop the services at 10:00PM
