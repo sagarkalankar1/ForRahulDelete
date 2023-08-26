@@ -1,11 +1,11 @@
-name: Build and push docker image to ECR
+name: Build and deploy image on dev environment
+
 
 on:
-  workflow_dispatch:
-    inputs:
-      environment:
-        required: true
-        type: string
+  pull_request:
+    branches:
+      - development
+    types: [closed]
 
 permissions:
   id-token: write
@@ -13,9 +13,43 @@ permissions:
 
 jobs:
   build-and-push:
-    name: Build docker image
+      if: github.event.pull_request.merged == true
+      name: Build docker image
+      runs-on: ubuntu-latest
+      outputs:
+        image-tag: ${{ steps.create-image-tag.outputs.image-tag }}
+      steps:
+        - name: Checkout
+          uses: actions/checkout@v3
+
+        - name: Configure AWS Credentials
+          uses: aws-actions/configure-aws-credentials@v2
+          with:
+            role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+            aws-region: ${{ VARS.AWS_REGION }}
+
+        - name: Login to Amazon ECR
+          id: login-ecr
+          uses: aws-actions/amazon-ecr-login@v1
+
+        - name: Create image tag
+          id: create-image-tag
+          run: |
+            TIMESTAMP=$(date +'%Y%m%d')
+            BRANCH=${{ github.ref_name }} 
+            COMMIT=$(git rev-parse --short HEAD)
+            IMAGE_TAG="${TIMESTAMP}-${GITHUB_RUN_NUMBER}-${BRANCH}-${COMMIT}"
+            echo "image-tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+        - name: Build and push
+          run: |
+            docker build -t ${{ steps.login-ecr.outputs.registry }}/${{ VARS.ECR_REPOSITORY }}:${{ steps.create-image-tag.outputs.image-tag }} --build-arg NODE_ENV=${{ VARS.NODE_ENV }} --build-arg AWS_REGION=${{ VARS.AWS_REGION }} .
+            docker push ${{ steps.login-ecr.outputs.registry }}/${{ VARS.ECR_REPOSITORY }}:${{ steps.create-image-tag.outputs.image-tag }}
+
+  deploy:
+    if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
+    needs: build-and-push
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -26,20 +60,22 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ VARS.AWS_REGION }}
 
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
+      - name: Download task definition file
+        run:
+          aws ecs describe-task-definition --task-definition ${{ VARS.ECS_TASK_DEFINITION }} --query taskDefinition > task-definition.json
 
-      - name: Create image tag
-        id: create-image-tag
-        run: |
-          TIMESTAMP=$(date +'%Y%m%d')
-          BRANCH=${{ github.ref_name }} 
-          COMMIT=$(git rev-parse --short HEAD)
-          TAG="${TIMESTAMP}-${GITHUB_RUN_NUMBER}-${BRANCH}-${COMMIT}"
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+      - name: Fill in the new image tag in the task definition
+        id: update-task-definition
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ VARS.CONTAINER_NAME }}
+          image: ${{ VARS.ECR_REGISTRY }}/${{ VARS.ECR_REPOSITORY }}:${{ needs.build-and-push.outputs.image-tag }}
 
-      - name: Build and push
-        run: |
-          docker build -t ${{ steps.login-ecr.outputs.registry }}/${{ VARS.ECR_REPOSITORY }}:${{ steps.create-image-tag.outputs.tag }} .
-          docker push ${{ steps.login-ecr.outputs.registry }}/${{ VARS.ECR_REPOSITORY }}:${{ steps.create-image-tag.outputs.tag }}
+      - name: Deploy Amazon task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.update-task-definition.outputs.task-definition }}
+          service: ${{ VARS.ECS_SERVICE }}
+          cluster: ${{ VARS.ECS_CLUSTER }}
+          wait-for-service-stability: true
