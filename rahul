@@ -1,12 +1,9 @@
-name: Deploy new image to ECS cluster
+name: Build and push docker image to ECR
 
 on:
   workflow_dispatch:
     inputs:
       environment:
-        required: true
-        type: string
-      image-tag:
         required: true
         type: string
 
@@ -15,7 +12,8 @@ permissions:
   contents: read
 
 jobs:
-  deploy:
+  build-and-push:
+    name: Build docker image
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
     steps:
@@ -28,22 +26,20 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ VARS.AWS_REGION }}
 
-      - name: Download task definition file
-        run:
-          aws ecs describe-task-definition --task-definition ${{ VARS.ECS_TASK_DEFINITION }} --query taskDefinition > task-definition.json
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Fill in the new image tag in the task definition
-        id: update-task-definition
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        with:
-          task-definition: task-definition.json
-          container-name: ${{ VARS.CONTAINER_NAME }}
-          image: ${{ VARS.ECR_REGISTRY }}/${{ VARS.ECR_REPOSITORY }}:${{ inputs.image-tag }}
+      - name: Create image tag
+        id: create-image-tag
+        run: |
+          TIMESTAMP=$(date +'%Y%m%d')
+          BRANCH=${{ github.ref_name }} 
+          COMMIT=$(git rev-parse --short HEAD)
+          TAG="${TIMESTAMP}-${GITHUB_RUN_NUMBER}-${BRANCH}-${COMMIT}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
-      - name: Deploy Amazon task definition
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: ${{ steps.update-task-definition.outputs.task-definition }}
-          service: ${{ VARS.ECS_SERVICE }}
-          cluster: ${{ VARS.ECS_CLUSTER }}
-          wait-for-service-stability: true
+      - name: Build and push
+        run: |
+          docker build -t ${{ steps.login-ecr.outputs.registry }}/${{ VARS.ECR_REPOSITORY }}:${{ steps.create-image-tag.outputs.tag }} .
+          docker push ${{ steps.login-ecr.outputs.registry }}/${{ VARS.ECR_REPOSITORY }}:${{ steps.create-image-tag.outputs.tag }}
