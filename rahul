@@ -1,77 +1,49 @@
-import boto3
+name: Deploy new image to ECS cluster
 
-def lambda_handler(event, context):
-    try:
-        # Extract the action from the event
-        if 'source' in event and event['source'] == 'aws.events':
-            action = event.get('detail', {}).get('action')
-        else:
-            action = event.get('action')
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        required: true
+        type: string
+      image-tag:
+        required: true
+        type: string
 
-        # Validate and process the action
-        if action == 'start':
-            cluster_name = 'db-cluster-aurora'  # Replace with your Aurora Serverless cluster identifier
-            
-            # Start the Aurora Serverless cluster
-            rds_client = boto3.client('rds')
-            response = rds_client.start_db_cluster(DBClusterIdentifier=cluster_name)
-            
-            # ECS-related code (start the service using ecs_client.update_service)
-            ecs_cluster_name = 'ecs-cluster1'
-            ecs_service_name = 'Service'
-            task_definition_arn = 'arn:aws:ecs:ap-south-1:528267078178:task-definition/td:2'
-            ecs_client = boto3.client('ecs')
-            response = ecs_client.update_service(
-                cluster=ecs_cluster_name,
-                service=ecs_service_name,
-                taskDefinition=task_definition_arn,
-                desiredCount=1
-            )
+permissions:
+  id-token: write
+  contents: read
 
-            custom_input = event.get('customInput', {})
-            return {
-                'statusCode': 200,
-                'body': f'Aurora Serverless cluster {cluster_name} started and ECS service started!',
-                'customInputReceived': custom_input
-            }
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
 
-        elif action == 'stop':
-            # ECS-related code (stop the service using ecs_client.update_service)
-            ecs_cluster_name = 'ecs-cluster1'
-            ecs_service_name = 'Service'
-            task_definition_arn = 'arn:aws:ecs:ap-south-1:528267078178:task-definition/td:2'
-            ecs_client = boto3.client('ecs')
-            response = ecs_client.update_service(
-                cluster=ecs_cluster_name,
-                service=ecs_service_name,
-                taskDefinition=task_definition_arn,
-                desiredCount=0
-            )
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ VARS.AWS_REGION }}
 
-            # Stop the Aurora Serverless cluster
-            aurora_cluster_name = 'db-cluster-aurora'  # Replace with your Aurora Serverless cluster identifier
-            rds_client = boto3.client('rds')
-            response = rds_client.stop_db_cluster(DBClusterIdentifier=aurora_cluster_name)
+      - name: Download task definition file
+        run:
+          aws ecs describe-task-definition --task-definition ${{ VARS.ECS_TASK_DEFINITION }} --query taskDefinition > task-definition.json
 
-            custom_input = event.get('customInput', {})
-            return {
-                'statusCode': 200,
-                'body': f'ECS service stopped and Aurora Serverless cluster {aurora_cluster_name} stopped!',
-                'customInputReceived': custom_input
-            }
+      - name: Fill in the new image tag in the task definition
+        id: update-task-definition
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ VARS.CONTAINER_NAME }}
+          image: ${{ VARS.ECR_REGISTRY }}/${{ VARS.ECR_REPOSITORY }}:${{ inputs.image-tag }}
 
-        else:
-            return {
-                'statusCode': 400,
-                'body': 'Invalid action. Use "start" or "stop".'
-            }
-
-    except Exception as e:
-        return {
-            'statusCode': 500,
-            'body': str(e)
-        }
-
-#above is code for single lambda function to start and stop aurora db and ecs service
-#We will invoke this lambda function by using 2 event bridges, first one to start services at
-# 10:00AM and second one to stop the services at 10:00PM
+      - name: Deploy Amazon task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.update-task-definition.outputs.task-definition }}
+          service: ${{ VARS.ECS_SERVICE }}
+          cluster: ${{ VARS.ECS_CLUSTER }}
+          wait-for-service-stability: true
